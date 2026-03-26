@@ -20,3 +20,7 @@ sudo umount /dev/sdc1 # Unmount if mounted, `/dev/sdc1` used as example
 ```sh
 zstdcat metal-amd64.iso | sudo dd of=/dev/sdc bs=4M status=progress oflag=sync # `/dev/sdc` used as example
 ```
+
+## Follow further controller Node instructions
+
+https://docs.siderolabs.com/talos/v1.12/getting-started/getting-started
