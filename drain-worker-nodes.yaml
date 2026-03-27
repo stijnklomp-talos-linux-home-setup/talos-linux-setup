@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Get all nodes that are NOT control-plane
+nodes=$(kubectl get nodes -o json | jq -r '
+  .items[]
+  | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+  | .metadata.name
+')
+
+if [[ -z "$nodes" ]]; then
+  echo "No worker nodes found to drain."
+  exit 0
+fi
+
+echo "Draining worker nodes:"
+echo "$nodes"
+echo
+
+for node in $nodes; do
+  echo "Draining $node ..."
+  kubectl drain "$node" \
+    --ignore-daemonsets \
+    --delete-emptydir-data \
+    --force
+done
+
+echo
+echo "All worker nodes drained."
