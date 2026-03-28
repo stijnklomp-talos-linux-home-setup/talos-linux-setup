@@ -9,18 +9,29 @@ nodes=$(kubectl get nodes -o json | jq -r '
   | .metadata.name
 ')
 
-if [[ -z "$nodes" ]]; then
-  echo "No worker nodes found to drain."
+if [[ -z "${nodes}" ]]; then
+  echo "No worker nodes found to cordon/drain."
   exit 0
 fi
 
-echo "Draining worker nodes:"
-echo "$nodes"
+echo "Worker nodes:"
+echo "${nodes}"
 echo
+echo "Cordoning all worker nodes..."
 
-for node in $nodes; do
-  echo "Draining $node ..."
-  kubectl drain "$node" \
+for node in ${nodes}; do
+  echo "Cordoning ${node} ..."
+  kubectl cordon "${node}" || true
+done
+
+echo
+echo "All worker nodes cordoned."
+echo
+echo "Draining worker nodes..."
+
+for node in ${nodes}; do
+  echo "Draining ${node} ..."
+  kubectl drain "${node}" \
     --ignore-daemonsets \
     --delete-emptydir-data \
     --force

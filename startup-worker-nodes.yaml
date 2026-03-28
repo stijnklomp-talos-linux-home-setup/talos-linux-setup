@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# How long to wait for nodes to become Ready
+TIMEOUT_SECONDS=300
+SLEEP_SECONDS=5
+
+nodes=$(kubectl get nodes -o json | jq -r '
+  .items[]
+  | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+  | .metadata.name
+')
+
+if [[ -z "${nodes}" ]]; then
+  echo "No worker nodes found."
+  exit 0
+fi
+
+echo "Worker nodes:"
+echo "${nodes}"
+echo
+echo "Waiting for nodes to become Ready..."
+
+for node in ${nodes}; do
+  echo -n "Checking ${node} ... "
+
+  elapsed=0
+  while true; do
+    status=$(kubectl get node "${node}" -o json | jq -r '
+      .status.conditions[]
+      | select(.type == "Ready")
+      | .status
+    ')
+
+    if [[ "${status}" == "True" ]]; then
+      echo "Ready"
+      break
+    fi
+
+    if (( elapsed >= TIMEOUT_SECONDS )); then
+      echo
+      echo "ERROR: ${node} did not become Ready within ${TIMEOUT_SECONDS}s"
+      exit 1
+    fi
+
+    echo -n "."
+    sleep "${SLEEP_SECONDS}"
+    elapsed=$((elapsed + SLEEP_SECONDS))
+  done
+done
+
+echo
+echo "All worker nodes are Ready."
+echo
+echo "Uncordoning worker nodes..."
+
+for node in ${nodes}; do
+  echo "Uncordoning ${node} ..."
+  kubectl uncordon "${node}"
+done
+
+echo
+echo "All worker nodes are schedulable."
