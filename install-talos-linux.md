@@ -1,12 +1,14 @@
 # Talos Linux versioned install instructions
 
-## Usage
+## talosctl
 
 ```sh
-VERSION=v1.12.6 ./talos-linux.sh
+VERSION=v1.12.6 ./install-talosctl.sh
 ```
 
-## Flash ISO to external drive
+## Cluster setup
+
+### Flash ISO to external drive
 
 1. Unmount drive if mounted
 
@@ -21,19 +23,20 @@ sudo umount /dev/sdc1 # Unmount if mounted, `/dev/sdc1` used as example
 zstdcat metal-amd64.iso | sudo dd of=/dev/sdc bs=4M status=progress oflag=sync # `/dev/sdc` used as example
 ```
 
-## Follow further controller node instructions
+### Follow further controller node instructions
 
 https://docs.siderolabs.com/talos/v1.12/getting-started/getting-started
 
-## Add worker node to cluster
+### Add worker node to cluster
 
-Find the disk to use:
+1. Reserve a static IP in the router **before** joining: `talos-cp-1`/`talos-worker-1` convention, new nodes take `192.168.1.109+`.
+2. Find the disk to use:
 
 ```sh
 talosctl --talosconfig=./talosconfig get disks --insecure -n $WORKER_IP[1] -o yaml
 ```
 
-Update the `install:disk` in `worker.yaml` and then apply:
+3. Update the `install:disk` in `worker.yaml` and then apply:
 
 ```sh
 talosctl apply-config --insecure --nodes $WORKER_IP[1] --file worker.yaml
