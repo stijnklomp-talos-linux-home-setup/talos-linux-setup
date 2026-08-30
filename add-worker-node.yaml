@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# add-worker-node.yaml — apply the Talos worker config to a new node and join it to home-cluster-1.
+# Pre-requisites:
+#   - Talos Linux installed on the node's device (see install-talos-linux.md) and the node is
+#     sitting in maintenance mode with a static IP / DHCP reservation.
+#   - ./talosconfig and ./worker.yaml present in this directory (or set TALOSCONFIG / WORKER_CONFIG).
+# Usage:
+#   ./add-worker-node.yaml <NODE_IP> (or export WORKER_IP first)
+
+NODE_IP="${1:-${WORKER_IP:-}}"
+CONFIG_FILE="${WORKER_CONFIG:-./worker.yaml}"
+
+if [[ -z "${NODE_IP}" ]]; then
+  echo "Usage: $0 <NODE_IP>   (or export WORKER_IP)" >&2
+  exit 1
+fi
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "ERROR: worker config not found at ${CONFIG_FILE} (override with WORKER_CONFIG)" >&2
+  exit 1
+fi
+
+echo "==> Checking disks on ${NODE_IP} ..."
+talosctl --talosconfig=./talosconfig get disks --insecure -n "${NODE_IP}" -o yaml
+
+echo
+echo "==> Verify that 'install:disk' in ${CONFIG_FILE} matches the disk above,"
+echo "    then continue. (Update the config first if it does not match.)"
+read -r -p "Press Enter to apply the worker config to ${NODE_IP} ..."
+
+echo
+echo "==> Applying ${CONFIG_FILE} to ${NODE_IP} ..."
+talosctl --talosconfig=./talosconfig apply-config --insecure --nodes "${NODE_IP}" --file "${CONFIG_FILE}"
+
+echo
+echo "Done. The node will install Talos to disk, reboot and join the cluster automatically."
+echo "Next steps:"
+echo "  1. ./startup-worker-nodes.yaml   (waits for Ready and uncordons workers)"
+echo "  2. talosctl get members          (verify the new member)"

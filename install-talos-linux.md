@@ -29,7 +29,7 @@ https://docs.siderolabs.com/talos/v1.12/getting-started/getting-started
 
 ### Add worker node to cluster
 
-1. Reserve a static IP in the router **before** joining: `talos-cp-1`/`talos-worker-1` convention, new nodes take `192.168.1.109+`.
+1. Reserve a static IP in the router **before** joining.
 2. Find the disk to use:
 
 ```sh
