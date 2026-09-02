@@ -17,15 +17,27 @@ lsblk # Check drives
 sudo umount /dev/sdc1 # Unmount if mounted, `/dev/sdc1` used as example
 ```
 
-2. Flash ISO
+2. Download latest ISO
+
+```sh
+curl -fLO https://github.com/siderolabs/talos/releases/download/vx.x.x/metal-amd64.iso
+```
+
+3. Flash ISO
 
 ```sh
 zstdcat metal-amd64.iso | sudo dd of=/dev/sdc bs=4M status=progress oflag=sync # `/dev/sdc` used as example
 ```
 
+4. Verify
+
+```sh
+sudo lsblk -f /dev/sdc # Should show `TALOS_Vx_x_x partitions`, `/dev/sdc` used as example
+```
+
 ### Follow further controller node instructions
 
-https://docs.siderolabs.com/talos/v1.12/getting-started/getting-started
+https://docs.siderolabs.com/talos/v1.13/getting-started/getting-started
 
 ### Add worker node to cluster
 
