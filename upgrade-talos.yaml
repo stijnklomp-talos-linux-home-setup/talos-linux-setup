@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# upgrade-talos.yaml — upgrade home-cluster-1 nodes to a target Talos version.
+# Order: control plane first (brief cluster-API downtime on the single CP), then workers one at a time.
+# Usage:
+#   ./upgrade-talos.yaml <TALOS_VERSION>     e.g. ./upgrade-talos.yaml v1.13.9
+# Env overrides:
+#   TALOSCONFIG       path to talosconfig (default ./talosconfig)
+#   CONTROL_PLANE_IP  control plane IP (default 192.168.1.107)
+#   WORKER_IPS        space-separated worker IPs to upgrade; default: discovered via kubectl
+#   SNAPSHOT_RETENTION number of etcd snapshots to keep (default 3)
+# Prerequisites:
+#   - talosctl >= target version (e.g. VERSION=v1.13.9 ./install-talosctl.sh)
+#   - kubectl + kubeconfig for home-cluster-1 (worker discovery + drain/uncordon)
+# Rollback if a node fails to boot: talosctl rollback -n <node-ip>
+
+TARGET_VERSION="${1:-}"
+CONFIG_FILE="${TALOSCONFIG:-./talosconfig}"
+CONTROL_PLANE_IP="${CONTROL_PLANE_IP:-192.168.1.107}"
+SNAPSHOT_RETENTION="${SNAPSHOT_RETENTION:-3}"
+INSTALLER_IMAGE="ghcr.io/siderolabs/installer:${TARGET_VERSION}"
+TALOSCTL=(talosctl --talosconfig="${CONFIG_FILE}")
+
+TIMEOUT_SECONDS=600
+SLEEP_SECONDS=10
+
+if [[ -z "${TARGET_VERSION}" ]]; then
+  echo "Usage: $0 <TALOS_VERSION>   e.g. $0 v1.13.9" >&2
+  exit 1
+fi
+
+if [[ ! "${SNAPSHOT_RETENTION}" =~ ^[0-9]+$ ]] || [[ "${SNAPSHOT_RETENTION}" -lt 1 ]]; then
+  echo "ERROR: SNAPSHOT_RETENTION must be a positive number (got '${SNAPSHOT_RETENTION}')" >&2
+  exit 1
+fi
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "ERROR: talosconfig not found at ${CONFIG_FILE} (override with TALOSCONFIG)" >&2
+  exit 1
+fi
+
+echo "==> talosctl client version:"
+talosctl version --client
+
+echo
+echo "==> etcd snapshot before upgrade ..."
+SNAPSHOT="backups/etcd-$(date +%Y%m%d-%H%M%S).db"
+mkdir -p backups
+"${TALOSCTL[@]}" etcd snapshot "${SNAPSHOT}" -n "${CONTROL_PLANE_IP}"
+echo "    Saved to ${SNAPSHOT}"
+
+echo "==> Pruning old snapshots (keeping newest ${SNAPSHOT_RETENTION}) ..."
+find backups -maxdepth 1 -name 'etcd-*.db' -printf '%T@ %p\n' \
+  | sort -rn \
+  | tail -n +$((SNAPSHOT_RETENTION + 1)) \
+  | cut -d' ' -f2- \
+  | while read -r old; do
+      rm -f "${old}"
+      echo "    Pruned ${old}"
+    done || true
+
+# Wraps talosctl upgrade: distinguishes user interrupt from real failure.
+run_upgrade() {
+  local ip="$1"
+  if ! "${TALOSCTL[@]}" upgrade --nodes "${ip}" --image "${INSTALLER_IMAGE}"; then
+    local rc=$?
+    if [[ ${rc} -eq 130 ]]; then
+      echo "Interrupted — the upgrade did not run. Re-run the script when ready." >&2
+      exit 130
+    fi
+    echo "ERROR: upgrade failed for ${ip} (exit ${rc})." >&2
+    echo "  Note: 'new upgrade API is not available, falling back to legacy' is normal for" >&2
+    echo "  Talos < 1.13 nodes and is not the cause of the failure." >&2
+    echo "  Retry with --legacy only if the node uses extraKernelArgs:" >&2
+    echo "  ${TALOSCTL[*]} upgrade --nodes ${ip} --image ${INSTALLER_IMAGE} --legacy" >&2
+    exit 1
+  fi
+}
+
+echo
+echo "==> Upgrading control plane ${CONTROL_PLANE_IP} to ${TARGET_VERSION} ..."
+run_upgrade "${CONTROL_PLANE_IP}"
+
+echo
+echo "==> Waiting for control plane to come back ..."
+elapsed=0
+while true; do
+  if "${TALOSCTL[@]}" version -n "${CONTROL_PLANE_IP}" >/dev/null 2>&1; then
+    echo "Control plane is back."
+    break
+  fi
+  if (( elapsed >= TIMEOUT_SECONDS )); then
+    echo "ERROR: control plane did not come back within ${TIMEOUT_SECONDS}s (rollback: talosctl rollback -n ${CONTROL_PLANE_IP})" >&2
+    exit 1
+  fi
+  echo -n "."
+  sleep "${SLEEP_SECONDS}"
+  elapsed=$((elapsed + SLEEP_SECONDS))
+done
+
+echo
+echo "==> Control plane version:"
+"${TALOSCTL[@]}" version -n "${CONTROL_PLANE_IP}"
+
+echo
+echo "==> Cluster health:"
+"${TALOSCTL[@]}" health -n "${CONTROL_PLANE_IP}"
+
+# --- Workers: name + IP pairs, discovered via kubectl unless WORKER_IPS filters ---
+node_pairs() {
+  kubectl get nodes -o json | jq -r '
+    .items[]
+    | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+    | .metadata.name as $n
+    | .status.addresses[] | select(.type == "InternalIP") | "\($n) \(.address)"
+  '
+}
+
+if [[ -n "${WORKER_IPS:-}" ]]; then
+  workers=$(node_pairs | awk -v ips="${WORKER_IPS}" '
+    BEGIN { split(ips, a, " "); for (i in a) want[a[i]] = 1 }
+    $2 in want { print }
+  ')
+  for ip in ${WORKER_IPS}; do
+    if ! grep -qw "${ip}" <<<"${workers}"; then
+      echo "ERROR: WORKER_IPS contains ${ip}, but no cluster node has that InternalIP" >&2
+      exit 1
+    fi
+  done
+else
+  workers=$(node_pairs)
+fi
+
+if [[ -z "${workers}" ]]; then
+  echo
+  echo "No worker nodes found to upgrade."
+else
+  while read -r node ip; do
+    [[ -z "${node}" ]] && continue
+
+    echo
+    echo "==> Cordon + drain ${node} (${ip}) ..."
+    kubectl cordon "${node}"
+    kubectl drain "${node}" --ignore-daemonsets --delete-emptydir-data --force
+
+    echo
+    echo "==> Upgrading worker ${ip} to ${TARGET_VERSION} ..."
+    run_upgrade "${ip}"
+
+    echo
+    echo -n "==> Waiting for ${node} to become Ready"
+    elapsed=0
+    while true; do
+      status=$(kubectl get node "${node}" -o json | jq -r '
+        .status.conditions[]
+        | select(.type == "Ready")
+        | .status
+      ' 2>/dev/null || true)
+      if [[ "${status}" == "True" ]]; then
+        echo " Ready"
+        break
+      fi
+      if (( elapsed >= TIMEOUT_SECONDS )); then
+        echo
+        echo "ERROR: ${node} did not become Ready within ${TIMEOUT_SECONDS}s (rollback: talosctl rollback -n ${ip})" >&2
+        exit 1
+      fi
+      echo -n "."
+      sleep "${SLEEP_SECONDS}"
+      elapsed=$((elapsed + SLEEP_SECONDS))
+    done
+
+    echo "==> Uncordon ${node} ..."
+    kubectl uncordon "${node}"
+  done <<<"${workers}"
+fi
+
+echo
+echo "==> Cluster members:"
+"${TALOSCTL[@]}" get members
+
+echo
+echo "==> Nodes:"
+kubectl get nodes -o wide

@@ -88,11 +88,29 @@ checksumbin=$(command -v openssl) || checksumbin=$(command -v shasum) || {
 }
 
 if [ -e "${dstfile}" ]; then
-    echo ""
-    echo "talosctl was already downloaded;  🎉"
-    echo ""
-    echo "To force re-downloading, delete '${dstfile}' then run me again."
-    happyexit
+    installed_version=$(talosctl version --client 2>/dev/null | sed -n 's/^[[:space:]]*Tag:[[:space:]]*//p' | head -n 1)
+
+    if [ -n "${installed_version}" ] && [ "${VERSION}" != "latest" ] && [ "${installed_version}" != "${VERSION}" ]; then
+        echo ""
+        echo "Installed talosctl version is ${installed_version}; requested ${VERSION}."
+        echo "Replacing the old binary..."
+        if [ -w "${INSTALLPATH}" ]; then
+            rm -f "${dstfile}"
+        elif command -v sudo > /dev/null 2>&1; then
+            sudo rm -f "${dstfile}"
+        elif command -v su > /dev/null 2>&1; then
+            su -c "rm -f '${dstfile}'"
+        else
+            echo "Cannot remove '${dstfile}' (no sudo/su). Remove it manually and re-run." >&2
+            exit 1
+        fi
+    else
+        echo ""
+        echo "talosctl was already downloaded;  🎉"
+        echo ""
+        echo "To force re-downloading, delete '${dstfile}' then run me again."
+        happyexit
+    fi
 fi
 
 tmpdir=$(mktemp -d /tmp/talosctl.XXXXXX)

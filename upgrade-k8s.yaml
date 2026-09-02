@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# upgrade-k8s.yaml — upgrade Kubernetes on home-cluster-1 (control-plane components first,
+# then kubelet on each node). Run AFTER the Talos upgrade; check the Talos/K8s support matrix
+# for the target version.
+# Usage:
+#   ./upgrade-k8s.yaml check                     show supported K8s versions, current cluster version, and the latest patch of the max minor
+#   ./upgrade-k8s.yaml <K8S_VERSION> <CLUSTER_CONFIG_DIR> [ROOT_HCL]
+#                                                 e.g. ./upgrade-k8s.yaml v1.36 cluster-config/ ./root.hcl
+#                                                 (a minor like v1.36 auto-resolves to the latest patch)
+#   <CLUSTER_CONFIG_DIR> (required): directory with the stored controlplane.yaml/worker.yaml.
+#     After the upgrade the script syncs their component image versions (kube-apiserver /
+#     controller-manager / scheduler / kube-proxy / kubelet) to the new Kubernetes version.
+#   [ROOT_HCL] (optional): path to root.hcl; if given, its k8s_version is synced too.
+# Env overrides:
+#   TALOSCONFIG       path to talosconfig (default ./talosconfig)
+#   CONTROL_PLANE_IP  control plane IP (default 192.168.1.107)
+# Prerequisites:
+#   - talosctl >= cluster Talos version
+#   - kubectl + kubeconfig for home-cluster-1 (current-version detection + verification)
+# NOTE: Kubernetes upgrades are one minor version at a time (1.35 -> 1.36 -> 1.37),
+#       and the max supported version depends on the Talos release (support matrix).
+
+TARGET_VERSION="${1:-}"
+CLUSTER_CONFIG="${2:-}"
+ROOT_HCL="${3:-}"
+CONFIG_FILE="${TALOSCONFIG:-./talosconfig}"
+CONTROL_PLANE_IP="${CONTROL_PLANE_IP:-192.168.1.107}"
+TALOSCTL=(talosctl --talosconfig="${CONFIG_FILE}")
+
+# Supported K8s versions for the local talosctl's Talos minor (from the docs support matrix).
+talos_minor() {
+  talosctl version --client 2>/dev/null | sed -n 's/^[[:space:]]*Tag:[[:space:]]*v\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || true
+}
+
+supported_versions() {
+  local minor
+  minor=$(talos_minor)
+  [[ -n "${minor}" ]] || { echo "ERROR: could not detect talosctl version (is it installed?)" >&2; return 1; }
+  curl -sL "https://docs.siderolabs.com/talos/v${minor}/getting-started/support-matrix" \
+    | grep -oE '<td>Kubernetes</td><td data-numeric="true">[^<]*' \
+    | sed 's/.*data-numeric="true">//' \
+    || true
+}
+
+# Prints one line like: Your Talos v1.13 supports Kubernetes 1.31 to 1.36.
+print_supported() {
+  local minor supported min max
+  minor=$(talos_minor)
+  supported=$(supported_versions)
+  [[ -n "${supported}" ]] || return 1
+  min=$(awk -F', ' '{print $NF}' <<<"${supported}")
+  max=$(awk -F', ' '{print $1}' <<<"${supported}")
+  echo "Your Talos v${minor} supports Kubernetes ${min} to ${max}."
+}
+
+# Lowest kubelet version across all nodes — the version upgrades start from.
+current_min_k8s() {
+  kubectl get nodes -o json 2>/dev/null | jq -r '.items[].status.nodeInfo.kubeletVersion' 2>/dev/null | sort -V | head -n 1 || true
+}
+
+# Latest patch for a Kubernetes minor, e.g. "1.36" -> "v1.36.4".
+latest_patch() {
+  local minor="${1#v}" ver
+  ver=$(curl -sL --max-time 15 "https://cdn.dl.k8s.io/release/stable-${minor}.txt" 2>/dev/null | tr -d '\r')
+  if [[ -z "${ver}" ]]; then
+    ver=$(curl -s --max-time 15 "https://api.github.com/repos/kubernetes/kubernetes/tags?per_page=100" 2>/dev/null \
+      | jq -r --arg m "v${minor}." '[.[].name] | map(select(startswith($m))) | .[0]' 2>/dev/null)
+  fi
+  [[ -n "${ver}" ]] || return 1
+  echo "${ver}"
+}
+
+if [[ "${TARGET_VERSION}" == "check" ]]; then
+  if ! print_supported; then
+    echo "ERROR: could not fetch the support matrix (network?) — see https://docs.siderolabs.com/talos/latest/getting-started/support-matrix" >&2
+    exit 1
+  fi
+  current=$(current_min_k8s)
+  if [[ -n "${current}" ]]; then
+    echo "Current Kubernetes on the cluster (lowest kubelet): ${current} — upgrades start from here."
+  fi
+  supported=$(supported_versions)
+  max=$(awk -F', ' '{print $1}' <<<"${supported}")
+  patch=$(latest_patch "${max}" || true)
+  echo
+  if [[ -n "${patch}" ]]; then
+    echo "Highest safe upgrade target: Kubernetes ${max} — latest patch: ${patch}"
+  else
+    echo "Highest safe upgrade target: Kubernetes ${max} (could not fetch the latest patch — network?)"
+  fi
+  echo "Upgrades move one minor version at a time: 1.35 -> 1.36 -> 1.37."
+  echo "Skipping a minor in one step is rejected (the 'unsupported upgrade path' error)."
+  exit 0
+fi
+
+if [[ -z "${TARGET_VERSION}" ]]; then
+  echo "Usage: $0 check | <K8S_VERSION> <CLUSTER_CONFIG_DIR> [ROOT_HCL]" >&2
+  echo "  e.g. $0 v1.36 cluster-config/ ./root.hcl" >&2
+  exit 1
+fi
+
+if [[ -z "${CLUSTER_CONFIG}" ]]; then
+  echo "Usage: $0 <K8S_VERSION> <CLUSTER_CONFIG_DIR> [ROOT_HCL]" >&2
+  echo "  <CLUSTER_CONFIG_DIR> is required — the directory with your stored controlplane.yaml/worker.yaml," >&2
+  echo "  e.g. $0 v1.36 ~/.../home-cluster-1-config" >&2
+  exit 1
+fi
+
+if [[ ! -d "${CLUSTER_CONFIG}" ]]; then
+  echo "ERROR: cluster config directory not found at '${CLUSTER_CONFIG}'." >&2
+  echo "       Pass the directory holding your stored controlplane.yaml/worker.yaml," >&2
+  echo "       e.g. $0 v1.36 ~/.../home-cluster-1-config" >&2
+  exit 1
+fi
+for f in controlplane.yaml worker.yaml; do
+  if [[ ! -f "${CLUSTER_CONFIG}/${f}" ]]; then
+    echo "ERROR: ${CLUSTER_CONFIG}/${f} not found." >&2
+    exit 1
+  fi
+done
+if [[ -n "${ROOT_HCL}" && ! -f "${ROOT_HCL}" ]]; then
+  echo "ERROR: root.hcl not found at '${ROOT_HCL}'" >&2
+  exit 1
+fi
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "ERROR: talosconfig not found at ${CONFIG_FILE} (override with TALOSCONFIG)" >&2
+  exit 1
+fi
+
+print_supported || echo "WARNING: could not fetch the Talos/K8s support matrix (network?) — only continue if you are sure ${TARGET_VERSION} is supported."
+current=$(current_min_k8s)
+if [[ -n "${current}" ]]; then
+  echo "Current Kubernetes on the cluster (lowest kubelet): ${current}"
+fi
+echo
+
+# Resolve a minor like "v1.36" to its latest patch (e.g. v1.36.4).
+if [[ "${TARGET_VERSION}" =~ ^v?[0-9]+\.[0-9]+$ ]]; then
+  resolved=$(latest_patch "${TARGET_VERSION}" || true)
+  if [[ -z "${resolved}" ]]; then
+    echo "ERROR: could not resolve the latest patch for Kubernetes ${TARGET_VERSION} (network?)" >&2
+    exit 1
+  fi
+  echo "Resolved Kubernetes ${TARGET_VERSION} -> ${resolved}"
+  TARGET_VERSION="${resolved}"
+  echo
+fi
+
+echo "==> Dry run: talosctl upgrade-k8s --to ${TARGET_VERSION}"
+"${TALOSCTL[@]}" upgrade-k8s --dry-run --to "${TARGET_VERSION}" -n "${CONTROL_PLANE_IP}"
+
+echo
+read -r -p "Press Enter to run the real Kubernetes upgrade to ${TARGET_VERSION} ..."
+
+echo
+echo "==> Upgrading Kubernetes to ${TARGET_VERSION} ..."
+"${TALOSCTL[@]}" upgrade-k8s --to "${TARGET_VERSION}" -n "${CONTROL_PLANE_IP}"
+
+# Sync stored machine configs (+ optional root.hcl) to the upgraded version.
+sync_stored_configs() {
+  local old_v new_v f
+  old_v=$(grep -oE 'kubelet:v[0-9]+\.[0-9]+\.[0-9]+' "${CLUSTER_CONFIG}/controlplane.yaml" | head -n 1 | sed 's/.*://')
+  new_v="${TARGET_VERSION}"
+  [[ "${old_v}" == v* ]] || old_v="v${old_v}"
+  [[ "${new_v}" == v* ]] || new_v="v${new_v}"
+
+  if [[ -z "${old_v}" || "${old_v}" == "v" ]]; then
+    echo "WARNING: could not detect the current Kubernetes version in the stored configs — sync manually." >&2
+    return
+  fi
+
+  if [[ "${old_v}" == "${new_v}" ]]; then
+    echo "Stored configs already at ${new_v} — nothing to sync."
+    return
+  fi
+
+  echo
+  echo "==> Syncing stored configs ${old_v} -> ${new_v} ..."
+  for f in controlplane.yaml worker.yaml; do
+    if grep -q "${old_v}" "${CLUSTER_CONFIG}/${f}"; then
+      sed -i "s|${old_v}|${new_v}|g" "${CLUSTER_CONFIG}/${f}"
+      echo "  Updated ${CLUSTER_CONFIG}/${f}:"
+      grep -n "${new_v}" "${CLUSTER_CONFIG}/${f}" | sed 's/^/    /'
+    else
+      echo "  ${CLUSTER_CONFIG}/${f}: no ${old_v} references — already synced."
+    fi
+  done
+
+  if [[ -n "${ROOT_HCL}" ]]; then
+    local old_k8s
+    old_k8s=$(grep -oE 'k8s_version[[:space:]]*=[[:space:]]*"[^"]*"' "${ROOT_HCL}" | grep -oE '"[^"]*"' | tr -d '"')
+    if [[ -z "${old_k8s}" ]]; then
+      echo "  WARNING: k8s_version not found in ${ROOT_HCL} — skipped."
+    elif [[ "${old_k8s}" != "${new_v}" ]]; then
+      sed -i "s|${old_k8s}|${new_v}|g" "${ROOT_HCL}"
+      echo "  Updated ${ROOT_HCL}:"
+      grep -n "k8s_version" "${ROOT_HCL}" | sed 's/^/    /'
+    else
+      echo "  ${ROOT_HCL}: already at ${new_v}."
+    fi
+  else
+    echo "  (ROOT_HCL not provided — skipping; pass the path to sync k8s_version there too.)"
+  fi
+}
+
+echo
+echo "==> Nodes:"
+kubectl get nodes -o wide
+
+echo
+echo "==> kube-system pods:"
+kubectl get pods -n kube-system
+
+sync_stored_configs

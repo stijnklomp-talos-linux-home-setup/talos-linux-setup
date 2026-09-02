@@ -3,7 +3,7 @@
 ## talosctl
 
 ```sh
-VERSION=v1.12.6 ./install-talosctl.sh
+VERSION=v1.13.9 ./install-talosctl.sh
 ```
 
 ## Cluster setup
