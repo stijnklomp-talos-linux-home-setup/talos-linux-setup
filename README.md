@@ -17,22 +17,11 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
 ## One-time install
 
-1. See [install-talos-linux.md](./install-talos-linux.md#cluster-setup). This flashes the Talos ISO, bootstraps the control plane, and joins the worker node(s).
+1. See [install-talos-linux.md](./install-talos-linux.md#cluster-setup). This flashes the Talos ISO and bootstraps the control plane.
 
 ## Add new worker node
 
-1. Install Talos Linux on the new node's device: see [install-talos-linux.md](./install-talos-linux.md#add-worker-node-to-cluster).
-2. Once a static IP has been reserved in the router, add the node to the cluster:
-
-```sh
-CONFIG_FILE=./worker.yaml ./add-worker-node.yaml 192.168.1.x
-```
-
-3. Wait for the node to become Ready and uncordon it:
-
-```sh
-./startup-worker-nodes.yaml # requires kubectl
-```
+1. See [install-talos-linux.md](./install-talos-linux.md#add-worker-node-to-cluster). This joins the worker node(s).
 
 ## Spin cluster UP
 

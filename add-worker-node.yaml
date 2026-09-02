@@ -9,9 +9,13 @@ set -euo pipefail
 #   - ./talosconfig and ./worker.yaml present in this directory (or set TALOSCONFIG / WORKER_CONFIG).
 # Usage:
 #   ./add-worker-node.yaml <NODE_IP> (or export WORKER_IP first)
+# The internal install disk is auto-detected (sata/nvme, ignoring the USB installer stick).
+# Override with: WORKER_DISK=/dev/disk/by-id/...
 
 NODE_IP="${1:-${WORKER_IP:-}}"
 CONFIG_FILE="${WORKER_CONFIG:-./worker.yaml}"
+TALOSCONFIG_FILE="${TALOSCONFIG:-./talosconfig}"
+TALOSCTL=(talosctl --talosconfig="${TALOSCONFIG_FILE}")
 
 if [[ -z "${NODE_IP}" ]]; then
   echo "Usage: $0 <NODE_IP>   (or export WORKER_IP)" >&2
@@ -23,17 +27,37 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
   exit 1
 fi
 
+if ! grep -qE '^version: v1alpha1|^apiVersion: v1alpha1' "${CONFIG_FILE}"; then
+  echo "ERROR: ${CONFIG_FILE} does not look like a Talos machine config." >&2
+  echo "       WORKER_CONFIG must point at worker.yaml, not talosconfig." >&2
+  exit 1
+fi
+
 echo "==> Checking disks on ${NODE_IP} ..."
-talosctl --talosconfig=./talosconfig get disks --insecure -n "${NODE_IP}" -o yaml
+"${TALOSCTL[@]}" get disks --insecure -n "${NODE_IP}" -o yaml
+
+if [[ -z "${WORKER_DISK:-}" ]]; then
+  WORKER_DISK="$("${TALOSCTL[@]}" get disks --insecure -n "${NODE_IP}" -o yaml \
+    | awk '/^    id: /{disk=$2; internal=""} /transport: sata|transport: nvme/{internal=1} internal && /by-id/{print $2; exit}')"
+fi
+
+if [[ -z "${WORKER_DISK:-}" ]]; then
+  echo "ERROR: could not detect an internal (sata/nvme) disk on ${NODE_IP}." >&2
+  echo "       Set WORKER_DISK=/dev/disk/by-id/... to choose one manually." >&2
+  exit 1
+fi
 
 echo
-echo "==> Verify that 'install:disk' in ${CONFIG_FILE} matches the disk above,"
-echo "    then continue. (Update the config first if it does not match.)"
+echo "==> Will install to: ${WORKER_DISK}"
+echo "    (override with WORKER_DISK if this is wrong)"
 read -r -p "Press Enter to apply the worker config to ${NODE_IP} ..."
 
 echo
-echo "==> Applying ${CONFIG_FILE} to ${NODE_IP} ..."
-talosctl --talosconfig=./talosconfig apply-config --insecure --nodes "${NODE_IP}" --file "${CONFIG_FILE}"
+echo "==> Applying ${CONFIG_FILE} to ${NODE_IP} with install.disk patched in ..."
+"${TALOSCTL[@]}" apply-config --insecure --nodes "${NODE_IP}" --file "${CONFIG_FILE}" \
+  --config-patch "machine:
+  install:
+    disk: ${WORKER_DISK}"
 
 echo
 echo "Done. The node will install Talos to disk, reboot and join the cluster automatically."

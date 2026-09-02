@@ -22,7 +22,7 @@ Tooling to install and manage the `home-cluster-1` Talos Linux cluster — the e
 | `README.md` | Main usage guide: install, add worker, spin up/down. |
 | `install-talos-linux.md` | Versioned install steps: flash ISO, bootstrap, join worker. |
 | `install-talosctl.sh` | Downloads + checksum-validates talosctl (`VERSION=v1.12.6 ./install-talosctl.sh`). |
-| `add-worker-node.yaml` | **Bash script** (despite `.yaml`): inspect disks, apply `worker.yaml`, join a new node. |
+| `add-worker-node.yaml` | **Bash script** (despite `.yaml`): lists disks, auto-detects the internal (sata/nvme) disk, applies `worker.yaml` with `install.disk` patched per node, joins it. |
 | `startup-worker-nodes.yaml` | **Bash script**: wait for Ready + uncordon workers (needs kubectl). |
 | `drain-worker-nodes.yaml` | **Bash script**: cordon + drain workers before shutdown (needs kubectl). |
 
@@ -34,8 +34,8 @@ Tooling to install and manage the `home-cluster-1` Talos Linux cluster — the e
 | Secrets stay local | `talosconfig` and `worker.yaml` live in this dir but are **not committed** (node join secrets). Never add them, or real IPs of future nodes, to git. |
 | No cluster access | Do not run `talosctl`/`kubectl` against `home-cluster-1` unless explicitly asked — workspace is source-code only. |
 | Static IP first | A new worker needs a router DHCP reservation **before** joining (`install-talos-linux.md`). Never fabricate a node IP. |
-| Verify disk before apply | `add-worker-node.yaml` shows `talosctl get disks` and pauses — `install:disk` in `worker.yaml` must match before applying. |
-| Env overrides | Scripts honor `WORKER_IP`, `WORKER_CONFIG`, `TALOSCONFIG`, `CONTROL_PLANE_IP`; document new ones in README. |
+| Verify disk before apply | `add-worker-node.yaml` prints the node's disks, auto-detects the internal disk (`transport: sata`/`nvme`, never `usb`/`loop0`) and applies it via `apply-config --config-patch` — `worker.yaml` itself stays generic. Override: `WORKER_DISK=/dev/disk/by-id/...`. |
+| Env overrides | Scripts honor `WORKER_IP`, `WORKER_CONFIG`, `TALOSCONFIG`, `WORKER_DISK`, `CONTROL_PLANE_IP`; document new ones in README. |
 | Docs sync | Keep `README.md` ↔ `install-talos-linux.md` consistent when steps change (script names, env vars, versions). |
 
 ## Commands (verify paths before claiming done)
