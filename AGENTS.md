@@ -28,9 +28,12 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 | Node | Role | IP |
 |------|------|----|
 | home-cluster-1 (talos-pve-g5b) | control plane | 192.168.1.107 |
-| home-cluster-1 (talos-szo-afm) | worker | 192.168.1.108 |
+| home-cluster-1 (talos-szo-afm) | worker — **CI node** (Tekton PipelineRuns) | 192.168.1.108 |
+| home-cluster-1 (talos-llr-9ky) | worker — Lenovo | 192.168.1.106 |
+| home-cluster-1 (talos-9an-o2z) | worker — Lenovo | 192.168.1.109 |
 
 - Versions: Talos `v1.13.9`, Kubernetes `v1.36.4`. Update only after verifying current stable upstream.
+- Node roles: set via `designate-node-roles.yaml` (control plane stays kube-system only; CI node is tainted `node-role.kubernetes.io/ci:NoSchedule`).
 - Connect flow (kubeconfig / TALOSCONFIG): `devops-wiki/resources/instructions/kubernetes.md` — not in this repo.
 
 ## Files
@@ -41,9 +44,10 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 | `install-talos-linux.md` | Versioned install steps: flash ISO, bootstrap, join worker. |
 | `install-talosctl.sh` | Downloads + checksum-validates talosctl; replaces an older installed version automatically (`VERSION=v1.13.9 ./install-talosctl.sh`). |
 | `add-worker-node.yaml` | **Bash script** (despite `.yaml`): lists disks, auto-detects the internal (sata/nvme) disk, applies `worker.yaml` with `install.disk` patched per node, joins it. |
-| `upgrade-talos.yaml` | **Bash script**: upgrade all nodes to a target Talos version — etcd snapshot, CP first (single CP = brief API downtime), then workers one at a time with drain/uncordon. Env: `TALOSCONFIG`, `CONTROL_PLANE_IP`, `WORKER_IPS` (default: kubectl discovery). |
+| `upgrade-talos.yaml` | **Bash script**: upgrade all nodes to a target Talos version — etcd snapshot, CP first (single CP = brief API downtime), then workers one at a time with drain/uncordon. Workers use the Image Factory schematic installer (`WORKER_INSTALLER_IMAGE`) — it carries the iscsi-tools extension Longhorn needs; the plain installer drops it. Env: `TALOSCONFIG`, `CONTROL_PLANE_IP`, `WORKER_IPS`, `WORKER_INSTALLER_IMAGE` (default: kubectl discovery). |
 | `upgrade-k8s.yaml` | **Bash script**: `check` mode prints supported K8s versions, current cluster kubelet version, and the latest patch of the max minor; upgrades via `talosctl upgrade-k8s` (dry-run first). `<CLUSTER_CONFIG_DIR>` arg is **required** (syncs stored `controlplane.yaml`/`worker.yaml` component images afterwards); optional `[ROOT_HCL]` arg syncs `k8s_version` too. |
 | `startup-worker-nodes.yaml` | **Bash script**: wait for Ready + uncordon workers (needs kubectl). |
+| `designate-node-roles.yaml` | **Bash script**: label/taint nodes by role (CI node = Dell .108, workers = Lenovos .106/.109); idempotent, re-run after node re-joins. |
 | `drain-worker-nodes.yaml` | **Bash script**: cordon + drain workers before shutdown (needs kubectl). |
 
 ## Rules
@@ -56,7 +60,8 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 | Static IP first | A new worker needs a router DHCP reservation **before** joining (`install-talos-linux.md`). Never fabricate a node IP. |
 | Verify disk before apply | `add-worker-node.yaml` prints the node's disks, auto-detects the internal disk (`transport: sata`/`nvme`, never `usb`/`loop0`) and applies it via `apply-config --config-patch` — `worker.yaml` itself stays generic. Override: `WORKER_DISK=/dev/disk/by-id/...`. |
 | Upgrade order | `upgrade-talos.yaml`: control plane → workers one at a time; never parallel upgrades (single CP, no quorum). `upgrade-k8s.yaml` only after Talos is at a supporting version; sync stored configs + `root.hcl` after it. |
-| Env overrides | No env vars are required — scripts default to the cluster facts above (CP `192.168.1.107`, workers auto-discovered via kubectl). Optional overrides still honored: `WORKER_IP`, `WORKER_CONFIG`, `TALOSCONFIG`, `WORKER_DISK`, `WORKER_IPS`, `CONTROL_PLANE_IP`, `SNAPSHOT_RETENTION`. |
+| Env overrides | No env vars are required — scripts default to the cluster facts above (CP `192.168.1.107`, workers auto-discovered via kubectl). Optional overrides still honored: `WORKER_IP`, `WORKER_CONFIG`, `TALOSCONFIG`, `WORKER_DISK`, `WORKER_IPS`, `CONTROL_PLANE_IP`, `SNAPSHOT_RETENTION`, `WORKER_INSTALLER_IMAGE`. |
+| Worker installer image | Workers run an Image Factory schematic installer (schematic `c9078f94...` = official extensions + `siderolabs/iscsi-tools`) — the plain `ghcr.io/siderolabs/installer` DROPS the extension on upgrade and Longhorn breaks. Never upgrade a worker with the plain installer. |
 | Docs sync | Keep `README.md` ↔ `install-talos-linux.md` consistent when steps change (script names, env vars, versions). |
 
 ## Commands (verify paths before claiming done)
@@ -69,6 +74,7 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 | Upgrade Talos (all nodes) | `./upgrade-talos.yaml <TALOS_VERSION>` |
 | Upgrade Kubernetes | `./upgrade-k8s.yaml check` then `./upgrade-k8s.yaml <K8S_VERSION> <CLUSTER_CONFIG_DIR> [ROOT_HCL]` |
 | Spin cluster up (workers) | `./startup-worker-nodes.yaml` |
+| Designate node roles | `./designate-node-roles.yaml` (after adding/rebuilding a worker) |
 | Spin cluster down (workers) | `./drain-worker-nodes.yaml` then shutdown each worker — README shows a manual IP list or kubectl auto-discovery |
 | Spin cluster down (control plane, last) | `talosctl shutdown -n $CONTROL_PLANE_IP` |
 
