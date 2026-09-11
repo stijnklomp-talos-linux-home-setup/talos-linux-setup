@@ -24,6 +24,11 @@ for node in ${nodes}; do
   kubectl cordon "${node}" || true
 done
 
+# --disable-eviction: Longhorn's per-node instance-manager PDBs (minAvailable 1,
+# allowed disruptions 0) block eviction forever, so a plain drain hangs. Deleting
+# pods directly is safe here — replica data lives on the worker disks and the
+# graceful talosctl shutdown + reboot preserves it. DaemonSets are skipped.
+
 echo
 echo "All worker nodes cordoned."
 echo
@@ -34,8 +39,12 @@ for node in ${nodes}; do
   kubectl drain "${node}" \
     --ignore-daemonsets \
     --delete-emptydir-data \
-    --force
+    --force \
+    --disable-eviction \
+    --timeout=5m
 done
 
 echo
 echo "All worker nodes drained."
+echo "NOTE: if a drain times out (script aborts), the remaining nodes are still"
+echo "cordoned and safe to shut down — talosctl shutdown terminates workloads"
