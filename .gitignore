@@ -1,0 +1,8 @@
+# Never commit node secrets (see AGENTS.md) — these are the cluster's join/identity material
+talosconfig
+worker.yaml
+secrets/
+
+# etcd snapshots — contain EVERY cluster secret (all K8s secrets + Talos CA).
+# Keep local only for disaster recovery; a public leak = rotate all credentials.
+backups/

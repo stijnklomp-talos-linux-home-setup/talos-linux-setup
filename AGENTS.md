@@ -57,6 +57,7 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 |------|--------|
 | `.yaml` = bash | All `*.yaml` scripts are executable shell scripts with `#!/usr/bin/env bash` — run them directly, never `kubectl apply`. |
 | Secrets stay local | `talosconfig` and `worker.yaml` live in this dir but are **not committed** (node join secrets). Never add them, or real IPs of future nodes, to git. |
+| Etcd snapshots never commit | `backups/*.db` = a full etcd dump: **every** Kubernetes Secret + Talos machine CA. They are local disaster-recovery only (`.gitignore` blocks `backups/`). This repo is PUBLIC — a pushed snapshot leaks all cluster credentials and forces a full rotation. |
 | Default cluster | `talosctl`/`kubectl` always target `home-cluster-1-config/` (workspace root) unless the user says otherwise — see "Default cluster" above. The cluster is live/production: read-only commands are always allowed; **every non-read command must be user-approved first**. |
 | Static IP first | A new worker needs a router DHCP reservation **before** joining (`install-talos-linux.md`). Never fabricate a node IP. |
 | Verify disk before apply | `add-worker-node.yaml` prints the node's disks, auto-detects the internal disk (`transport: sata`/`nvme`, never `usb`/`loop0`) and applies it via `apply-config --config-patch` — `worker.yaml` itself stays generic. Override: `WORKER_DISK=/dev/disk/by-id/...`. |
