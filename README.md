@@ -16,6 +16,7 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
 - `talosctl` installed: see [install-talos-linux.md](./install-talos-linux.md#talosctl)
 - How to connect: https://github.com/stijnklomp-talos-linux-home-setup/devops-wiki (instructions in `resources/instructions/kubernetes.md`)
+- New hardware: see [bios-power-settings.md](./bios-power-settings.md) (power + AC-recovery BIOS checklist)
 
 ## One-time install
 
