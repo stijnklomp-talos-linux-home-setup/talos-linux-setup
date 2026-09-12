@@ -48,7 +48,7 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 | `upgrade-k8s.yaml` | **Bash script**: `check` mode prints supported K8s versions, current cluster kubelet version, and the latest patch of the max minor; upgrades via `talosctl upgrade-k8s` (dry-run first). `<CLUSTER_CONFIG_DIR>` arg is **required** (syncs stored `controlplane.yaml`/`worker.yaml` component images afterwards); optional `[ROOT_HCL]` arg syncs `k8s_version` too. |
 | `startup-worker-nodes.yaml` | **Bash script**: wait for Ready + uncordon workers (needs kubectl). |
 | `designate-node-roles.yaml` | **Bash script**: label/taint nodes by role (CI node = Dell .108, workers = Lenovos .106/.109); idempotent, re-run after node re-joins. |
-| `drain-worker-nodes.yaml` | **Bash script**: cordon + drain workers before shutdown (needs kubectl). |
+| `drain-worker-nodes.yaml` | **Bash script**: cordon + drain workers before shutdown (needs kubectl). All workers by default; pass worker IPs as args (or `WORKER_IPS`) to drain a subset; refuses the control-plane IP. |
 
 ## Rules
 

@@ -2,24 +2,59 @@
 
 set -euo pipefail
 
-# Get all nodes that are NOT control-plane
-nodes=$(kubectl get nodes -o json | jq -r '
-  .items[]
-  | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
-  | .metadata.name
-')
+# Usage:
+#   ./drain-worker-nodes.yaml [WORKER_IP ...]   drain only the given worker IPs
+#   ./drain-worker-nodes.yaml                   drain ALL non-control-plane nodes
+# Env override: WORKER_IPS="ip1 ip2" (space-separated); positional args win.
 
-if [[ -z "${nodes}" ]]; then
+if [[ $# -gt 0 ]]; then
+  WORKER_IPS="${*}"
+fi
+
+# Name + InternalIP pairs for all non-control-plane nodes
+node_pairs() {
+  kubectl get nodes -o json | jq -r '
+    .items[]
+    | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null)
+    | .metadata.name as $n
+    | .status.addresses[] | select(.type == "InternalIP") | "\($n) \(.address)"
+  '
+}
+
+if [[ -n "${WORKER_IPS:-}" ]]; then
+  workers=$(node_pairs | awk -v ips="${WORKER_IPS}" '
+    BEGIN { split(ips, a, " "); for (i in a) want[a[i]] = 1 }
+    $2 in want { print }
+  ')
+  for ip in ${WORKER_IPS}; do
+    if ! grep -qw "${ip}" <<<"${workers}"; then
+      if kubectl get nodes -o json | jq -e --arg ip "${ip}" '
+          .items[]
+          | select(.metadata.labels["node-role.kubernetes.io/control-plane"] != null)
+          | .status.addresses[] | select(.type == "InternalIP" and .address == $ip)
+        ' >/dev/null 2>&1; then
+        echo "ERROR: ${ip} is the control-plane node — refusing to drain it." >&2
+      else
+        echo "ERROR: ${ip} is not a cluster node InternalIP." >&2
+      fi
+      exit 1
+    fi
+  done
+else
+  workers=$(node_pairs)
+fi
+
+if [[ -z "${workers}" ]]; then
   echo "No worker nodes found to cordon/drain."
   exit 0
 fi
 
 echo "Worker nodes:"
-echo "${nodes}"
+awk '{print "  " $1 " (" $2 ")"}' <<<"${workers}"
 echo
-echo "Cordoning all worker nodes..."
+echo "Cordoning worker nodes..."
 
-for node in ${nodes}; do
+for node in $(awk '{print $1}' <<<"${workers}"); do
   echo "Cordoning ${node} ..."
   kubectl cordon "${node}" || true
 done
@@ -34,7 +69,7 @@ echo "All worker nodes cordoned."
 echo
 echo "Draining worker nodes..."
 
-for node in ${nodes}; do
+for node in $(awk '{print $1}' <<<"${workers}"); do
   echo "Draining ${node} ..."
   kubectl drain "${node}" \
     --ignore-daemonsets \

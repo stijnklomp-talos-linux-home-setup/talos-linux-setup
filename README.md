@@ -2,12 +2,13 @@
 
 Tooling to install and manage the `home-cluster-1` Talos cluster.
 
+Cluster devices from physical top-down location:
 | Node | Role | IP |
 |------|------|----|
-| home-cluster-1 (talos-pve-g5b) | control plane | 192.168.1.107 |
-| home-cluster-1 (talos-szo-afm) | worker — CI node (Tekton PipelineRuns) | 192.168.1.108 |
 | home-cluster-1 (talos-llr-9ky) | worker — Lenovo | 192.168.1.106 |
 | home-cluster-1 (talos-9an-o2z) | worker — Lenovo | 192.168.1.109 |
+| home-cluster-1 (talos-pve-g5b) | control plane | 192.168.1.107 |
+| home-cluster-1 (talos-szo-afm) | worker — CI node (Tekton PipelineRuns) | 192.168.1.108 |
 
 Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
@@ -37,18 +38,19 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
 1. Power on the machines.
 2. The control plane boots and the workers join automatically.
-3. Wait for the workers to be Ready and uncordon them:
+3. Wait for the workers to be Ready and uncordon them: (requires kubectl)
 
 ```sh
-./startup-worker-nodes.yaml # requires kubectl
+./startup-worker-nodes.yaml
 ```
 
 ## Spin cluster DOWN
 
-1. Move workloads off the workers (cordon + drain):
+1. Move workloads off the workers (cordon + drain): (requires kubectl)
 
 ```sh
-./drain-worker-nodes.yaml # requires kubectl
+./drain-worker-nodes.yaml # Drain all worker nodes
+./drain-worker-nodes.yaml 192.168.1.x 192.168.1.x # Drain specific worker nodes
 ```
 
 2. Shut down the worker nodes:
