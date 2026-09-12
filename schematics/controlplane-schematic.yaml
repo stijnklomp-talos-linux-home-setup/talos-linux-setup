@@ -1,0 +1,10 @@
+# controlplane-schematic.yaml — Image Factory schematic for home-cluster-1 control plane.
+# Stock Talos boot assets + low-power kernel args.
+# Minted: <POST https://factory.talos.dev/schematics>; content-addressable.
+# Installer image: factory.talos.dev/metal-installer/177b1d1bf5738656688be6a31c92bbd1596d50d14c1afcc805a0173b4076a6e3:<talos-version>
+# NOTE: kernel args are baked into the UKI at image build time — changing them here
+# requires re-minting this schematic AND upgrading nodes to the new image (apply-config alone is ignored).
+customization:
+  extraKernelArgs:
+    - pcie_aspm=force
+    - pcie_aspm.policy=power

@@ -12,8 +12,10 @@ set -euo pipefail
 #   WORKER_IPS        space-separated worker IPs to upgrade; default: discovered via kubectl
 #   SNAPSHOT_RETENTION number of etcd snapshots to keep (default 3)
 #   WORKER_INSTALLER_IMAGE installer image for workers (default: Image Factory
-#     schematic with iscsi-tools baked in — REQUIRED, Longhorn needs it; plain
-#     installer drops the extension on upgrade)
+#     schematic with iscsi-tools + low-power kernel args baked in — REQUIRED,
+#     Longhorn needs iscsi-tools; plain installer drops the extension on upgrade)
+#   CONTROL_PLANE_INSTALLER_IMAGE installer image for the control plane (default:
+#     Image Factory schematic with low-power kernel args baked in)
 # Prerequisites:
 #   - talosctl >= target version (e.g. VERSION=v1.13.9 ./install-talosctl.sh)
 #   - kubectl + kubeconfig for home-cluster-1 (worker discovery + drain/uncordon)
@@ -23,9 +25,12 @@ TARGET_VERSION="${1:-}"
 CONFIG_FILE="${TALOSCONFIG:-./talosconfig}"
 CONTROL_PLANE_IP="${CONTROL_PLANE_IP:-192.168.1.107}"
 SNAPSHOT_RETENTION="${SNAPSHOT_RETENTION:-3}"
-INSTALLER_IMAGE="ghcr.io/siderolabs/installer:${TARGET_VERSION}"
-# Schematic c9078f94... = official extensions + siderolabs/iscsi-tools
-WORKER_INSTALLER_IMAGE="${WORKER_INSTALLER_IMAGE:-factory.talos.dev/metal-installer/c9078f9419961640c712a8bf2bb9174933dfcf1da383fd8ea2b7dc21493f8bac:${TARGET_VERSION}}"
+# Schematics (see schematics/): kernel args are baked into the UKI at build time —
+# a plain/old schematic image silently drops kernel args (and iscsi-tools on workers).
+# Control plane schematic 177b1d1b... = stock + pcie_aspm=force pcie_aspm.policy=power
+CONTROL_PLANE_INSTALLER_IMAGE="${CONTROL_PLANE_INSTALLER_IMAGE:-factory.talos.dev/metal-installer/177b1d1bf5738656688be6a31c92bbd1596d50d14c1afcc805a0173b4076a6e3:${TARGET_VERSION}}"
+# Worker schematic 8e594bc9... = iscsi-tools + same kernel args
+WORKER_INSTALLER_IMAGE="${WORKER_INSTALLER_IMAGE:-factory.talos.dev/metal-installer/8e594bc9dbab2dce4bfcf4a7248c6c2462dca385c77a4ba3812878373179ba27:${TARGET_VERSION}}"
 TALOSCTL=(talosctl --talosconfig="${CONFIG_FILE}")
 
 TIMEOUT_SECONDS=600
@@ -67,10 +72,10 @@ find backups -maxdepth 1 -name 'etcd-*.db' -printf '%T@ %p\n' \
     done || true
 
 # Wraps talosctl upgrade: distinguishes user interrupt from real failure.
-# $2 = installer image (control plane: plain; workers: schematic with iscsi-tools)
+# $2 = installer image (control plane: schematic with kernel args; workers: schematic with iscsi-tools + args)
 run_upgrade() {
   local ip="$1"
-  local image="${2:-${INSTALLER_IMAGE}}"
+  local image="${2:-${CONTROL_PLANE_INSTALLER_IMAGE}}"
   if ! "${TALOSCTL[@]}" upgrade --nodes "${ip}" --image "${image}"; then
     local rc=$?
     if [[ ${rc} -eq 130 ]]; then
@@ -88,7 +93,7 @@ run_upgrade() {
 
 echo
 echo "==> Upgrading control plane ${CONTROL_PLANE_IP} to ${TARGET_VERSION} ..."
-run_upgrade "${CONTROL_PLANE_IP}" "${INSTALLER_IMAGE}"
+run_upgrade "${CONTROL_PLANE_IP}" "${CONTROL_PLANE_INSTALLER_IMAGE}"
 
 echo
 echo "==> Waiting for control plane to come back ..."
