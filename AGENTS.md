@@ -27,13 +27,13 @@ docker run --rm -v "$PWD/home-cluster-1-config:/cfg:ro" \
 
 | Node | Role | IP |
 |------|------|----|
-| home-cluster-1 (talos-pve-g5b) | control plane | 192.168.1.107 |
-| home-cluster-1 (talos-szo-afm) | worker — **CI node** (Tekton PipelineRuns) | 192.168.1.108 |
-| home-cluster-1 (talos-llr-9ky) | worker — Lenovo | 192.168.1.106 |
-| home-cluster-1 (talos-9an-o2z) | worker — Lenovo | 192.168.1.109 |
+| home-cluster-1 (talos-f1k-nu0) | control plane | 192.168.1.107 |
+| home-cluster-1 (talos-3qb-723) | worker — **CI node** (Tekton PipelineRuns) | 192.168.1.108 |
+| home-cluster-1 (talos-pil-rbl) | worker — Lenovo | 192.168.1.106 |
+| home-cluster-1 (talos-ioc-nnr) | worker — Lenovo | 192.168.1.109 |
 
 - Versions: Talos `v1.13.9`, Kubernetes `v1.36.4`. Update only after verifying current stable upstream.
-- Node roles: set via `designate-node-roles.yaml` (control plane stays kube-system only; CI node is tainted `node-role.kubernetes.io/ci:NoSchedule`).
+- Node roles: set via `designate-node-roles.yaml` (control plane stays kube-system only; CI node is tainted `node-role.kubernetes.io/ci:PreferNoSchedule` — Tekton TaskRuns prefer it via soft nodeAffinity, everything else avoids it unless no other node fits).
 - Connect flow (kubeconfig / TALOSCONFIG): `devops-wiki/resources/instructions/kubernetes.md` — not in this repo.
 
 ## Files

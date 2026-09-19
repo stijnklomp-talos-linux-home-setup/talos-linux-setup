@@ -4,12 +4,14 @@ set -euo pipefail
 
 # designate-node-roles.yaml — label + taint nodes by role for home-cluster-1.
 # Run after adding/rebuilding ANY worker: general workers get the worker label
-# (ingress-nginx/MetalLB/Tekton controllers nodeSelector on it); a CI node gets
-# the ci label + NoSchedule taint (only Tekton PipelineRuns run there).
+# (ingress-nginx/MetalLB/Tekton controllers nodeSelector on it); the CI node gets
+# the ci label + PreferNoSchedule taint (Tekton PipelineRuns PREFER it via soft
+# affinity — when it's full they spill to the workers; everything else avoids it
+# unless every other node is full).
 # Roles (cluster facts, see AGENTS.md):
-#   control-plane (talos-pve-g5b, 192.168.1.107)  — already tainted by Talos; runs kube-system only
-#   ci            (talos-szo-afm, 192.168.1.108)  — Dell; runs Tekton PipelineRuns only
-#   worker        (talos-llr-9ky, 192.168.1.106 + talos-9an-o2z, 192.168.1.109) — Lenovo; everything else
+#   control-plane (talos-f1k-nu0, 192.168.1.107)  — already tainted by Talos; runs kube-system only
+#   ci            (talos-3qb-723, 192.168.1.108)  — Dell; Tekton PipelineRuns prefer it
+#   worker        (talos-pil-rbl, 192.168.1.106 + talos-ioc-nnr, 192.168.1.109) — Lenovo; everything else
 # Idempotent; safe to re-run after node re-joins.
 # Requires kubectl (default cluster: home-cluster-1-config/, see AGENTS.md).
 
@@ -29,7 +31,11 @@ fi
 
 echo "==> Designating ${ci_node} (${CI_NODE_IP}) as CI node ..."
 kubectl label node "${ci_node}" node-role.kubernetes.io/ci="" --overwrite
-kubectl taint node "${ci_node}" node-role.kubernetes.io/ci:NoSchedule --overwrite
+# Soft taint: scheduler avoids the CI node for non-Tekton pods but still
+# schedules there when no other node fits. Remove the legacy hard taint first
+# (--overwrite does not replace a taint with a different effect).
+kubectl taint node "${ci_node}" node-role.kubernetes.io/ci:NoSchedule- 2>/dev/null || true
+kubectl taint node "${ci_node}" node-role.kubernetes.io/ci:PreferNoSchedule --overwrite
 
 for ip in ${WORKER_NODE_IPS}; do
   node="$(node_name "${ip}")"

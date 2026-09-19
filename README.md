@@ -5,10 +5,10 @@ Tooling to install and manage the `home-cluster-1` Talos cluster.
 Cluster devices from physical top-down location:
 | Node | Role | IP |
 |------|------|----|
-| home-cluster-1 (talos-llr-9ky) | worker — Lenovo | 192.168.1.106 |
-| home-cluster-1 (talos-9an-o2z) | worker — Lenovo | 192.168.1.109 |
-| home-cluster-1 (talos-pve-g5b) | control plane | 192.168.1.107 |
-| home-cluster-1 (talos-szo-afm) | worker — CI node (Tekton PipelineRuns) | 192.168.1.108 |
+| home-cluster-1 (talos-pil-rbl) | worker — Lenovo | 192.168.1.106 |
+| home-cluster-1 (talos-ioc-nnr) | worker — Lenovo | 192.168.1.109 |
+| home-cluster-1 (talos-f1k-nu0) | control plane | 192.168.1.107 |
+| home-cluster-1 (talos-3qb-723) | worker — CI node (Tekton PipelineRuns) | 192.168.1.108 |
 
 Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
@@ -32,7 +32,7 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 ```
 
 - New **general worker**: gets the `node-role.kubernetes.io/worker` label — required by ingress-nginx, MetalLB speaker and Tekton controllers (all `nodeSelector` on it).
-- New **CI node** (PipelineRuns-only): gets the `node-role.kubernetes.io/ci` label + `NoSchedule` taint.
+- New **CI node** (Tekton-preferred): gets the `node-role.kubernetes.io/ci` label + `PreferNoSchedule` taint — TaskRuns prefer it (soft nodeAffinity in the TektonConfig default pod template) and spill to the general workers when it is full; other workloads avoid it unless every other node is full.
 - The script's node lists are in the cluster-facts table at the top — update them if a node's IP changes.
 
 ## Spin cluster UP
