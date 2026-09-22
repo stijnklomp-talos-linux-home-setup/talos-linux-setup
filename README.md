@@ -47,6 +47,14 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 
 ## Spin cluster DOWN
 
+1. Spin entire cluster down (cordon + drain all worker nodes): (requires kubectl)
+
+```sh
+./spindown-worker-nodes.sh
+```
+
+OR:
+
 1. Move workloads off the workers (cordon + drain): (requires kubectl)
 
 ```sh
