@@ -53,35 +53,22 @@ Versions: Talos `v1.x.x`, Kubernetes `v1.x.x`.
 ./spindown-worker-nodes.sh
 ```
 
-OR:
+## Cluster capacity report
 
-1. Move workloads off the workers (cordon + drain): (requires kubectl)
+Read-only CPU/RAM/storage snapshot of all nodes (build once, then run):
 
 ```sh
-./drain-worker-nodes.yaml # Drain all worker nodes
-./drain-worker-nodes.yaml 192.168.1.x 192.168.1.x # Drain specific worker nodes
+docker build -t home-cluster-capacity cluster-capacity
+docker run --rm -it -e WATCH=5 -v "$PWD/../home-cluster-1-config:/cfg:ro" home-cluster-capacity
 ```
 
-2. Shut down the worker nodes:
+## Heat and fans report
+
+Read-only temperatures (°C) and fan RPM per node (build once, then run):
 
 ```sh
-for ip in 192.168.1.x 192.168.1.x
-    talosctl shutdown -n $ip
-end
-```
-
-Or automatically — finds all **Ready** worker IPs via kubectl (already-off nodes are skipped):
-
-```sh
-kubectl get nodes -o json \
-  | jq -r '.items[] | select(.metadata.labels["node-role.kubernetes.io/control-plane"] == null and any(.status.conditions[]; .type == "Ready" and .status == "True")) | .status.addresses[] | select(.type == "InternalIP") | .address' \
-  | xargs -n 1 talosctl shutdown -n
-```
-
-3. Once the workers are down, shut down the control plane:
-
-```sh
-talosctl shutdown -n 192.168.1.107
+docker build -t home-cluster-heat-fans heat-fans
+docker run --rm -it -e WATCH=5 -v "$PWD/../home-cluster-1-config:/cfg:ro" home-cluster-heat-fans
 ```
 
 ## Upgrade Talos Linux
