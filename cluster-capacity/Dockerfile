@@ -9,5 +9,6 @@ COPY cluster-capacity.py /usr/local/bin/cluster-capacity.py
 
 ENV KUBECONFIG=/cfg/kubeconfig
 ENV TZ=Europe/London
+ENV TERM=xterm-256color
 
 ENTRYPOINT ["python3", "/usr/local/bin/cluster-capacity.py"]

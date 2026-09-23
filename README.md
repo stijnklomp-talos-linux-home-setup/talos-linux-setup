@@ -71,6 +71,12 @@ docker build -t home-cluster-heat-fans heat-fans
 docker run --rm -it -e WATCH=5 -v "$PWD/../home-cluster-1-config:/cfg:ro" home-cluster-heat-fans
 ```
 
+`VIEW=complex` shows every sensor instead of the hottest per component:
+
+```sh
+docker run --rm -it -e VIEW=complex -v "$PWD/../home-cluster-1-config:/cfg:ro" home-cluster-heat-fans
+```
+
 ## Upgrade Talos Linux
 
 Check the latest stable Talos version:

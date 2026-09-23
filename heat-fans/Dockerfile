@@ -9,5 +9,7 @@ COPY heat-fans.py /usr/local/bin/heat-fans.py
 
 ENV TALOSCONFIG=/cfg/talosconfig
 ENV TZ=Europe/London
+ENV TERM=xterm-256color
+ENV COLORTERM=truecolor
 
 ENTRYPOINT ["python3", "/usr/local/bin/heat-fans.py"]

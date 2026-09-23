@@ -4,16 +4,21 @@
 Node sensors from /sys/class/hwmon via the Talos API (talosctl):
 CPU (coretemp), board (acpitz/nct6686), disks (drivetemp/nvme) and fans (nct6686).
 Unconnected thermistors (chip max reading, no critical temp) are hidden.
+Bars show the temperature on a 0-100 °C scale, colored by a smooth blue-to-red
+gradient that shifts on every degree.
 
 Env:
   TALOSCONFIG  path to talosconfig (default /cfg/talosconfig)
   TALOSCTL     talosctl binary (default talosctl)
   WATCH        seconds between refreshes; unset or non-TTY = one snapshot
+  VIEW         simple (default) = hottest per component, complex = every sensor
   COLUMNS      fallback width when stdout is not a TTY (default 150)
   TZ           timezone for the "updated" timestamp (image default Europe/London)
 """
 
+import colorsys
 import concurrent.futures
+import copy
 import json
 import os
 import re
@@ -31,8 +36,23 @@ from rich.text import Text
 TALOSCONFIG_PATH = os.environ.get("TALOSCONFIG", "/cfg/talosconfig")
 TALOSCTL = os.environ.get("TALOSCTL", "talosctl")
 HWMON_ROOT = "/sys/class/hwmon"
-DEFAULT_CRIT = 100.0
+TEMP_CHART_MAX = 100.0
 MAX_WORKERS = 24
+
+SECTION_BOX = copy.copy(box.SIMPLE_HEAD)
+SECTION_BOX.row_horizontal = "─"
+SECTION_BOX.row_cross = "─"
+
+COMPONENT_CHIPS = (
+    ("CPU", {"coretemp", "k10temp", "zenpower", "cpu_thermal", "x86_pkg_temp", "peci"}),
+    ("GPU", {"amdgpu", "i915", "nouveau", "radeon", "nvidia", "xe"}),
+    ("RAM", {"jc42", "spd5118", "ee1004"}),
+    ("Storage", {"drivetemp", "nvme", "sas"}),
+)
+COMPONENT_ORDER = ("CPU", "GPU", "RAM", "Storage", "Board")
+
+TEMP_COLOR_MIN = 30.0
+TEMP_COLOR_MAX = 90.0
 
 
 class ClusterError(RuntimeError):
@@ -157,7 +177,7 @@ def assemble(member, dirs, values):
                 sensor = f"{model} · {label}" if not label.startswith("temp") else model
             else:
                 sensor = f"{chip} · {label}"
-            temps.append({"node": member["name"], "sensor": sensor, "value": value, "crit": crit})
+            temps.append({"node": member["name"], "chip": chip, "sensor": sensor, "value": value, "crit": crit})
         for i in indices(files, "fan"):
             raw = values.get((base, f"fan{i}_input"))
             if not raw:
@@ -210,15 +230,44 @@ def shorten(text, limit):
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
-def temp_style(fraction):
-    return "green" if fraction < 0.70 else "yellow" if fraction < 0.85 else "red"
+def component_of(chip):
+    for component, chips in COMPONENT_CHIPS:
+        if chip in chips:
+            return component
+    return "Board"
 
 
-def make_bar(fraction, width):
+def role_labels(members):
+    labels, worker = {}, 0
+    for member in members:
+        if member["type"] == "controlplane":
+            labels[member["name"]] = "controller"
+        else:
+            worker += 1
+            labels[member["name"]] = f"worker {worker}"
+    return labels
+
+
+def node_label(name, roles, layout):
+    role = roles.get(name, name)
+    if layout["width"] >= 130:
+        return f"{role} · {name.removeprefix('talos-')}"
+    return role
+
+
+def temp_color(value):
+    fraction = (value - TEMP_COLOR_MIN) / (TEMP_COLOR_MAX - TEMP_COLOR_MIN)
+    fraction = max(0.0, min(fraction, 1.0))
+    hue = 240.0 * (1.0 - fraction)
+    red, green, blue = colorsys.hsv_to_rgb(hue / 360.0, 1.0, 1.0)
+    return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
+
+
+def make_bar(fraction, width, style):
     fraction = max(0.0, min(fraction, 1.0))
     filled = int(round(fraction * width))
     bar = Text()
-    bar.append("█" * filled, style=temp_style(fraction))
+    bar.append("█" * filled, style=style)
     bar.append("░" * (width - filled), style="grey35")
     return bar
 
@@ -226,7 +275,7 @@ def make_bar(fraction, width):
 def layout_for(width):
     return {
         "width": width,
-        "node_alias": width < 96,
+        "role_width": 18 if width >= 130 else 10,
         "show_sensor": width >= 40,
         "show_crit": width >= 96,
         "show_bar": width >= 48,
@@ -239,10 +288,11 @@ def layout_for(width):
 
 def footnote(width):
     tiers = (
-        "temps in °C from node hwmon · bar = fraction of critical temp (100 °C when unknown) · 0 RPM = fan stopped",
-        "temps °C from hwmon · bar = % of critical temp (100 °C if unknown) · 0 RPM = fan stopped",
-        "temps °C · bar = % of critical (100 °C if unknown) · 0 RPM = stopped",
-        "°C · bar = % of critical · 0 RPM = stopped",
+        "bar = temperature (0–100 °C) · color = blue→green→yellow→red gradient (30–90 °C, shifts every degree) · 0 RPM = fan stopped",
+        "bar = temperature (0–100 °C) · color = blue→red gradient (30–90 °C, every degree) · 0 RPM = fan stopped",
+        "bar = temperature (0–100 °C) · color = blue→red by temperature (30–90 °C) · 0 RPM = stopped",
+        "bar = temp (0–100 °C) · color = blue→red 30–90 °C · 0 RPM = stopped",
+        "bar = temp 0–100 °C · 0 RPM = stopped",
         "0 RPM = stopped",
     )
     for text in tiers:
@@ -269,7 +319,7 @@ def paint(console, parts, clear):
     console.file.flush()
 
 
-def header_panel(context, members, temps, fans, layout):
+def header_panel(context, members, temps, fans, roles, layout):
     local_now = datetime.now().astimezone()
     now = local_now.strftime("%H:%M:%S")
     if layout["width"] >= 48:
@@ -280,11 +330,12 @@ def header_panel(context, members, temps, fans, layout):
     stopped = [f for f in fans if f["rpm"] == 0]
     stats = []
     if hottest:
+        detail = f"{roles.get(hottest['node'], hottest['node'])} · {component_of(hottest['chip'])}"
         stats.append(
             (
                 "TEMP",
-                Text(f"{hottest['value']:.0f}°C", style=temp_style(hottest["value"] / (hottest["crit"] or DEFAULT_CRIT))),
-                Text(f"{hottest['node']} · {shorten(hottest['sensor'], 28)}", style="grey62"),
+                Text(f"{hottest['value']:.0f}°C", style="white"),
+                Text(shorten(detail, 32), style="grey62"),
             )
         )
     stats.append(
@@ -312,10 +363,11 @@ def header_panel(context, members, temps, fans, layout):
     return Panel(grid, title=title, subtitle=f"updated {now}", subtitle_align="right", border_style="grey50")
 
 
-def temperature_table(temps, layout):
+def temperature_table(temps, roles, layout):
+    title = "TEMPERATURES · every sensor" if layout["width"] >= 44 else "TEMPERATURES"
     table = Table(
-        title="TEMPERATURES",
-        box=box.SIMPLE_HEAD,
+        title=title,
+        box=SECTION_BOX,
         title_justify="left",
         border_style="grey50",
         expand=False,
@@ -323,17 +375,16 @@ def temperature_table(temps, layout):
     columns = [("node", "left")]
     if layout["show_sensor"]:
         columns.append(("sensor", "left"))
-    columns.append(("temp", "right"))
+    columns.append(("°C", "right"))
     if layout["show_crit"]:
         columns.append(("critical", "right"))
     if layout["show_bar"]:
-        columns.append(("usage", "left"))
+        columns.append(("temperature", "left"))
     for name, justify in columns:
         table.add_column(name, justify=justify, no_wrap=True)
 
-    node_width = 9 if layout["node_alias"] else 15
     fixed = (
-        node_width
+        layout["role_width"]
         + (layout["sensor_width"] if layout["show_sensor"] else 0)
         + 7
         + (9 if layout["show_crit"] else 0)
@@ -342,22 +393,67 @@ def temperature_table(temps, layout):
     )
     bar_width = max(8, min(28, layout["width"] - fixed))
 
+    previous = None
     for temp in temps:
-        limit = temp["crit"] or DEFAULT_CRIT
-        row = [Text(temp["node"].removeprefix("talos-") if layout["node_alias"] else temp["node"])]
+        if previous is not None and temp["node"] != previous:
+            table.add_section()
+        previous = temp["node"]
+        row = [Text(node_label(temp["node"], roles, layout))]
         if layout["show_sensor"]:
             row.append(Text(shorten(temp["sensor"], layout["sensor_width"]), style="grey62"))
-        row.append(Text(f"{temp['value']:.0f}°C", style=temp_style(temp["value"] / limit)))
+        row.append(Text(f"{temp['value']:.0f}°C", style="white"))
         if layout["show_crit"]:
             row.append(Text(f"{temp['crit']:.0f}°C" if temp["crit"] else "—", style="grey62"))
         if layout["show_bar"]:
-            row.append(make_bar(temp["value"] / limit, bar_width))
+            row.append(make_bar(temp["value"] / TEMP_CHART_MAX, bar_width, temp_color(temp["value"])))
         table.add_row(*row)
     return table
 
 
-def fan_table(fans, layout):
-    table = Table(title="FANS", box=box.SIMPLE_HEAD, title_justify="left", border_style="grey50", expand=False)
+def summary_table(temps, roles, layout):
+    title = "TEMPERATURES · hottest per component" if layout["width"] >= 46 else "TEMPERATURES"
+    table = Table(
+        title=title,
+        box=SECTION_BOX,
+        title_justify="left",
+        border_style="grey50",
+        expand=False,
+    )
+    columns = [("node", "left"), ("component", "left"), ("°C", "right")]
+    if layout["show_bar"]:
+        columns.append(("temperature", "left"))
+    for name, justify in columns:
+        table.add_column(name, justify=justify, no_wrap=True)
+
+    fixed = layout["role_width"] + 10 + 7 + (2 * len(columns)) + 2
+    bar_width = max(8, min(32, layout["width"] - fixed))
+
+    node_order, hottest = {}, {}
+    for temp in temps:
+        node_order.setdefault(temp["node"], len(node_order))
+        key = (temp["node"], component_of(temp["chip"]))
+        if key not in hottest or temp["value"] > hottest[key]["value"]:
+            hottest[key] = temp
+
+    previous = None
+    for key in sorted(hottest, key=lambda k: (node_order[k[0]], COMPONENT_ORDER.index(k[1]))):
+        temp = hottest[key]
+        if previous is not None and key[0] != previous:
+            table.add_section()
+        previous = key[0]
+        row = [
+            Text(node_label(temp["node"], roles, layout)),
+            Text(key[1], style="grey62"),
+            Text(f"{temp['value']:.0f}°C", style="white"),
+        ]
+        if layout["show_bar"]:
+            row.append(make_bar(temp["value"] / TEMP_CHART_MAX, bar_width, temp_color(temp["value"])))
+        table.add_row(*row)
+    return table
+
+
+def fan_table(fans, roles, layout):
+    table = Table(title="FANS", box=SECTION_BOX, title_justify="left", border_style="grey50", expand=False)
     columns = [("node", "left")]
     if layout["show_fan_label"]:
         columns.append(("fan", "left"))
@@ -366,9 +462,13 @@ def fan_table(fans, layout):
         columns.append(("state", "left"))
     for name, justify in columns:
         table.add_column(name, justify=justify, no_wrap=True)
+    previous = None
     for fan in fans:
+        if previous is not None and fan["node"] != previous:
+            table.add_section()
+        previous = fan["node"]
         stopped = fan["rpm"] == 0
-        row = [Text(fan["node"].removeprefix("talos-") if layout["node_alias"] else fan["node"])]
+        row = [Text(node_label(fan["node"], roles, layout))]
         if layout["show_fan_label"]:
             row.append(Text(shorten(fan["sensor"], layout["sensor_width"]), style="grey62"))
         row.append(Text(str(fan["rpm"]), style="yellow" if stopped else None))
@@ -378,16 +478,17 @@ def fan_table(fans, layout):
     return table
 
 
-def render(console, clear=False):
+def render(console, clear=False, complex_view=False):
     context = cluster_context()
     members, temps, fans = gather()
     layout = layout_for(console.width)
+    roles = role_labels(members)
 
-    parts = [header_panel(context, members, temps, fans, layout), ""]
+    parts = [header_panel(context, members, temps, fans, roles, layout), ""]
     if temps:
-        parts.append(temperature_table(temps, layout))
+        parts.append(temperature_table(temps, roles, layout) if complex_view else summary_table(temps, roles, layout))
     if fans:
-        parts.append(fan_table(fans, layout))
+        parts.append(fan_table(fans, roles, layout))
     if not temps and not fans:
         parts.append(Text("no hwmon sensors found on any node", style="yellow"))
     note = footnote(layout["width"])
@@ -410,10 +511,15 @@ def main():
             console.print(f"[yellow]ignoring invalid WATCH={watch!r}[/]")
     if interval and not sys.stdout.isatty():
         interval = None
+    view = os.environ.get("VIEW", "simple").strip().lower()
+    if view not in ("simple", "complex", "all", "full"):
+        console.print(f"[yellow]ignoring invalid VIEW={view!r} (using simple)[/]")
+        view = "simple"
+    complex_view = view in ("complex", "all", "full")
     try:
         clear = False
         while True:
-            render(console, clear=clear)
+            render(console, clear=clear, complex_view=complex_view)
             if not interval:
                 break
             time.sleep(interval)
